@@ -623,36 +623,38 @@ public sealed partial class AnalysisService
                 job.Error = null;
                 await db.SaveChangesAsync();
                 // 결과·알림은 같은 트랜잭션으로 저장한다. 로컬 분석도 자동 정비나 설비 제어를 실행하지 않는다.
-                if (job.ActorId is { } actor)
+                // 수동 분석: 요청자(AI_COMPLETED). 예약 분석: 위험도 MEDIUM·HIGH일 때만, AI_SCHEDULED에서
+                // 채널을 하나 이상 켠 활성 관리자(AI_SCHEDULED, OFF/OFF는 구독 해제).
+                // 알림 원인 ID는 결과 ID로 정해 같은 결과로 알림이 두 번 생기지 않게 한다.
+                var scheduled = job.ActorId is null;
+                long[] recipients = job.ActorId is { } actor
+                    ? [actor]
+                    : payload.Risk is "MEDIUM" or "HIGH"
+                        ? await ScheduledRecipientsAsync()
+                        : [];
+                log.LogDebug(
+                    "분석 완료 알림 대상: {JobId}, {Scheduled}, {Risk}, {RecipientCount}",
+                    job.JobId,
+                    scheduled,
+                    payload.Risk,
+                    recipients.Length
+                );
+                if (recipients.Length > 0)
                 {
-                    log.LogDebug(
-                        "{Operation}: {Decision}",
-                        "FinishAsync",
-                        "분기 일치 [job.ActorId is { } actor]"
-                    );
-                    var eventId = Guid.NewGuid().ToString();
                     await inbox.CreateAsync(
-                        eventId,
+                        "analysis-result:" + result.ResultId.ToString(
+                            System.Globalization.CultureInfo.InvariantCulture
+                        ),
                         payload.MockFlag ? "Mock AI 분석 완료" : "로컬 AI 유지보전 검토 완료",
                         payload.MockFlag
                             ? "모의 분석 참고 결과입니다. 실제 예측 또는 유지보전 경보가 아닙니다."
-                            : $"시연 기준 상태 {payload.Risk}. AI 설명은 참고 자료이며 현장 담당자의 검토가 필요합니다.",
+                            : $"시연 기준 상태 {payload.Risk}. "
+                                + "AI 설명은 참고 자료이며 현장 담당자의 검토가 필요합니다.",
                         null,
-                        [
-                            actor
-                        ],
-                        job.CorrelationId
-                    );
-                    var notice = await db.Set<Notification>().SingleAsync(x => x
-                        .EventId == eventId);
-                    notice.AnalysisResultId = result.ResultId;
-                }
-                else
-                {
-                    log.LogDebug(
-                        "{Operation}: {Decision}",
-                        "FinishAsync",
-                        "분기 불일치 [job.ActorId is { } actor]"
+                        recipients,
+                        job.CorrelationId,
+                        eventKind: scheduled ? "AI_SCHEDULED" : "AI_COMPLETED",
+                        analysisResultId: result.ResultId
                     );
                 }
             }
@@ -701,6 +703,18 @@ public sealed partial class AnalysisService
         return job.State == "SUCCEEDED";
     }
 
+    // 예약 분석 알림 수신자: 활성 ADMIN 가운데 AI_SCHEDULED 채널을 하나 이상 켠 사용자.
+    // 설정 행이 없거나 OFF/OFF면 구독하지 않은 것으로 본다(Inbox 전용 구독은 이번 범위 밖).
+    private async Task<long[]> ScheduledRecipientsAsync() =>
+        await db.Set<NotificationChannelSetting>().AsNoTracking()
+            .Where(x => x.EventKind == "AI_SCHEDULED"
+                && (x.EmailMode != "OFF" || x.ChatMode != "OFF")
+                && db.Set<UserAccount>().Any(u => u.UserId == x.UserId
+                    && u.Active == EF.Parameter(true))
+                && db.Set<UserRole>().Any(r => r.UserId == x.UserId && r.Role == "ADMIN"))
+            .OrderBy(x => x.UserId)
+            .Select(x => x.UserId)
+            .ToArrayAsync();
 }
 
 

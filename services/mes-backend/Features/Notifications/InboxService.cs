@@ -18,15 +18,25 @@ public sealed class InboxService(
 
     // Called inside the originating business transaction. No external delivery happens here.
     // 업무 트랜잭션 안에서 이벤트 중복을 확인하고 알림·수신자·Outbox를 준비한다. 최종 커밋은 호출자가 맡는다.
+    // eventKind가 있으면(경보·AI 업무 알림) 수신자별 채널 설정을 지금 시점 값으로 Outbox data.routing에 담는다.
+    // 소비자는 이 스냅샷만 따르므로 나중에 설정을 바꿔도 이미 만든 알림의 채널은 바뀌지 않는다.
+    // eventKind가 없으면(Mock·로컬 시연) 기존 payload 그대로다.
     public async Task CreateAsync(
         string causeEventId,
         string title,
         string body,
         long? alarmId,
         long[] recipients,
-        string correlationId
+        string correlationId,
+        string? eventKind = null,
+        long? analysisResultId = null
     )
     {
+        if (eventKind is not null && !NotificationRouting.ValidEvent(eventKind))
+        {
+            throw new ArgumentException("Unknown notification event kind", nameof(eventKind));
+        }
+
         try
         {
             log.LogDebug(
@@ -75,10 +85,27 @@ public sealed class InboxService(
                 EventId = causeEventId,
                 Title = title,
                 Body = body,
-                AlarmId = alarmId
+                AlarmId = alarmId,
+                AnalysisResultId = analysisResultId
             };
             db.Add(notification);
             await db.SaveChangesAsync();
+
+            // 업무 알림: 수신자별 현재 설정(없으면 OFF/OFF, 버전 null)을 스냅샷으로 만든다.
+            var settings = eventKind is null
+                ? []
+                : await db.Set<NotificationChannelSetting>().AsNoTracking()
+                    .Where(x => x.EventKind == eventKind && recipients.Contains(x.UserId))
+                    .ToArrayAsync();
+            if (eventKind is not null)
+            {
+                log.LogDebug(
+                    "알림 채널 스냅샷 준비: {EventKind}, {RecipientCount}, {ConfiguredCount}",
+                    eventKind,
+                    recipients.Distinct().Count(),
+                    settings.Length
+                );
+            }
             foreach (var userId in recipients.Distinct())
             {
                 db.Add(new NotificationRecipient
@@ -91,12 +118,41 @@ public sealed class InboxService(
             {
                 var eventId = Guid.NewGuid().ToString();
                 var now = CollectionFormat.UtcNow();
+                var notificationKey = OrderService.Id(notification.NotificationId);
+                var recipientIds = chunk.Select(OrderService.Id).ToArray();
+                var alarmKey = alarmId is null ? null : OrderService.Id(alarmId.Value);
+                var resultKey = analysisResultId is null
+                    ? null
+                    : OrderService.Id(analysisResultId.Value);
+                object data = eventKind is null
+                    ? new
+                    {
+                        notificationId = notificationKey,
+                        title,
+                        body,
+                        recipientIds,
+                        alarmId = alarmKey,
+                        orderId = (string?)null,
+                        analysisResultId = resultKey
+                    }
+                    : new
+                    {
+                        notificationId = notificationKey,
+                        title,
+                        body,
+                        recipientIds,
+                        alarmId = alarmKey,
+                        orderId = (string?)null,
+                        analysisResultId = resultKey,
+                        eventKind,
+                        routing = chunk.Select(userId => Snapshot(userId, settings)).ToArray()
+                    };
                 db.Add(new OutboxEvent
                 {
                     EventId = eventId,
                     Type = "mes.notification.created.v1",
                     AggregateType = "NOTIFICATION",
-                    AggregateId = OrderService.Id(notification.NotificationId),
+                    AggregateId = notificationKey,
                     AggregateVersion = 1,
                     Status = "PENDING",
                     Payload = CollectionFormat.Canonical(new
@@ -108,16 +164,7 @@ public sealed class InboxService(
                         occurredAt = now,
                         correlationId,
                         causationId = causeEventId,
-                        data = new
-                        {
-                            notificationId = OrderService.Id(notification.NotificationId),
-                            title,
-                            body,
-                            recipientIds = chunk.Select(OrderService.Id).ToArray(),
-                            alarmId = alarmId is null ? null : OrderService.Id(alarmId.Value),
-                            orderId = (string?)null,
-                            analysisResultId = (string?)null
-                        }
+                        data
                     })
                 });
             }
@@ -146,6 +193,19 @@ public sealed class InboxService(
             }
             throw;
         }
+    }
+
+    // 한 수신자의 채널 스냅샷. 설정이 없으면 버전 null·OFF/OFF(Inbox만)다.
+    private static object Snapshot(long userId, NotificationChannelSetting[] settings)
+    {
+        var setting = settings.SingleOrDefault(x => x.UserId == userId);
+        return new
+        {
+            userId = OrderService.Id(userId),
+            settingVersion = setting?.Version,
+            emailMode = setting?.EmailMode ?? "OFF",
+            chatMode = setting?.ChatMode ?? "OFF"
+        };
     }
 
     public async Task<PageResult<NotificationView>> ListAsync(

@@ -1,4 +1,4 @@
-﻿using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore;
 using FactoryMES.Backend.Persistence.Entities;
 
 namespace FactoryMES.Backend.Persistence;
@@ -9,6 +9,7 @@ public sealed partial class MesDbContext(DbContextOptions<MesDbContext> options)
     protected override void OnModelCreating(ModelBuilder model)
     {
         ConfigureAutoProduction(model);
+        ConfigureNotificationSettings(model);
         // 내부 로그인 계정: 인증 서비스가 비밀번호 해시·활성 여부를 읽고 Cookie 주체를 만든다.
         model.Entity<UserAccount>(e =>
         {

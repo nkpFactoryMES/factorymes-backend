@@ -264,6 +264,7 @@ public static partial class OrderEndpoints
         FactoryMES.Backend.Features.Collection.CollectionEndpoints.MapPublic(group);
         FactoryMES.Backend.Features.Alarms.AlarmEndpoints.MapPublic(group);
         FactoryMES.Backend.Features.Notifications.DeliveryEndpoints.MapPublic(group);
+        FactoryMES.Backend.Features.Notifications.NotificationSettingsEndpoints.MapPublic(group);
         FactoryMES.Backend.Features.Reporting.ReportingEndpoints.MapPublic(group);
         FactoryMES.Backend.Features.Analysis.AnalysisEndpoints.MapPublic(group);
     }

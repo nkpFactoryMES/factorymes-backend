@@ -51,6 +51,7 @@ builder.Services.AddScoped<MasterDataService>();
 builder.Services.AddScoped<CollectionService>();
 builder.Services.AddScoped<AlarmService>();
 builder.Services.AddScoped<InboxService>();
+builder.Services.AddScoped<NotificationSettingsService>();
 builder.Services.AddScoped<AnalysisService>();
 builder.Services.AddSingleton<AnalysisCoordinator>();
 builder.Services.AddAuthorization(AnalysisEndpoints.AddPolicies);

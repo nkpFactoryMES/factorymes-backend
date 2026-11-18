@@ -369,6 +369,28 @@ public sealed partial class DeliveryService
             );
         }
 
+        // 업무 알림(경보·AI): 생성 당시 채널 스냅샷만 따른다. 현재 설정은 다시 읽지 않는다.
+        // validateOnly(Outbox 재처리 정합성 검사)도 같은 검증을 거치고 원장은 만들지 않는다.
+        var routing = NotificationRouting.ReadSnapshot(data, recipients);
+        if (routing is not null)
+        {
+            log.LogDebug(
+                "업무 알림 채널 스냅샷 적용: {NotificationId}, {RecipientCount}, {ValidationOnly}",
+                notificationId,
+                routing.Length,
+                validateOnly
+            );
+            if (!validateOnly)
+            {
+                await CreateRoutedIntentsAsync(
+                    notificationId,
+                    routing,
+                    ct
+                );
+            }
+            return;
+        }
+
         var key = Id(notificationId);
         var localAudit = await db.Set<AuditEvent>().AsNoTracking().SingleOrDefaultAsync(x =>
             x.EntityType == "NOTIFICATION" && x.EntityId == key

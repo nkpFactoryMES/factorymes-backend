@@ -272,7 +272,16 @@ public sealed partial class AlarmService
                 equipment.Name + " · " + alarm.Kind + " · " + change,
                 alarm.AlarmId,
                 recipients,
-                correlationId
+                correlationId,
+                // 수신자별 채널 설정 스냅샷의 기준 이벤트. 알 수 없는 변화는 기존 Mock 경로로 둔다.
+                eventKind: change switch
+                {
+                    "OPENED" => "ALARM_OPENED",
+                    "RECOVERED" => "ALARM_RECOVERED",
+                    "CLOSED" => "ALARM_CLOSED",
+                    "FORCE_CLOSED" => "ALARM_FORCE_CLOSED",
+                    _ => null
+                }
             );
         }
         await db.SaveChangesAsync();

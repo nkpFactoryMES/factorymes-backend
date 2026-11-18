@@ -167,6 +167,64 @@ public sealed partial class DeliveryService
         }
     }
 
+    // 업무 알림 채널 스냅샷으로 발송 원장을 만든다.
+    // OFF는 원장 없음(Inbox만), MOCK은 기존 Mock 고정 대상, LOCAL은 기존 로컬 SMTP·HTTP 고정 대상이다.
+    // 시나리오는 SUCCESS로 고정한다(업무 알림에 시험용 실패 시나리오를 섞지 않는다).
+    // 알림·수신자·채널당 원장 1행(UQ_DLV_RECIPIENT)이므로 재소비해도 중복 생성하지 않는다.
+    private async Task CreateRoutedIntentsAsync(
+        long notificationId,
+        NotificationRoutingSnapshot[] routing,
+        CancellationToken ct
+    )
+    {
+        foreach (var item in routing)
+        {
+            var recipient = Parse(item.UserId);
+            foreach (var (channel, mode) in new[] {
+                ("EMAIL", item.EmailMode),
+                ("CHAT", item.ChatMode)
+            })
+            {
+                if (mode == "OFF")
+                {
+                    continue;
+                }
+
+                if (await db.Set<Delivery>().AnyAsync(x => x.NotificationId == notificationId
+                    && x.RecipientId == recipient && x.Channel == channel, ct))
+                {
+                    log.LogDebug(
+                        "이미 존재하는 업무 발송 원장을 유지합니다: {NotificationId}, {Channel}",
+                        notificationId,
+                        channel
+                    );
+                    continue;
+                }
+
+                var lower = channel.ToLowerInvariant();
+                db.Add(new Delivery
+                {
+                    NotificationId = notificationId,
+                    RecipientId = recipient,
+                    Channel = channel,
+                    DestinationKey = mode == "LOCAL"
+                        ? LocalDeliveryPolicy.Destination(channel, item.UserId)
+                        : "mock." + lower + ".user." + item.UserId,
+                    TargetRef = mode == "LOCAL"
+                        ? LocalDeliveryPolicy.Target(channel, item.UserId, "SUCCESS")
+                        : "mock://local/" + lower + "/" + item.UserId + "/SUCCESS",
+                    Status = "PENDING"
+                });
+            }
+        }
+
+        log.LogDebug(
+            "업무 발송 원장 준비: {NotificationId}, {RecipientCount}",
+            notificationId,
+            routing.Length
+        );
+    }
+
     // 행 잠금·시도 횟수는 호출자가 소유한다. 이 메서드는 제한된 로컬 통신 후 변경을 준비한다.
     private async Task<string> ProcessLocalAsync(
         Delivery row,
